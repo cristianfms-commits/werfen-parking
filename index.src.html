@@ -197,7 +197,7 @@ nav.tabs button[aria-selected=true]{color:var(--link);font-weight:bold}
 .scanInfo>*{background:rgba(0,0,0,.68);border-radius:12px;padding:8px 14px}
 .scanRead:empty{display:none}
 .scanTop{margin-bottom:auto}
-.scanBox{width:100%;max-width:400px;aspect-ratio:3.4/1;align-self:center;border-radius:14px;border:3px solid #fff;box-shadow:0 0 0 200vmax rgba(0,0,0,.62);position:relative;overflow:hidden}
+.scanBox{width:100%;max-width:400px;aspect-ratio:2.5/1;align-self:center;border-radius:14px;border:3px solid #fff;box-shadow:0 0 0 200vmax rgba(0,0,0,.62);position:relative;overflow:hidden}
 .scanBox.ok{border-color:#2E9E5B}
 .scanBox .laser{position:absolute;left:6%;right:6%;top:50%;height:2px;background:#E87722;box-shadow:0 0 10px #E87722;animation:las 1.6s ease-in-out infinite alternate}
 @keyframes las{from{top:18%}to{top:82%}}
@@ -291,7 +291,7 @@ nav.tabs button[aria-selected=true]{color:var(--link);font-weight:bold}
   <div class="scanMid">
     <span></span>
     <div class="scanBox" id="scanBox"><i class="laser"></i></div>
-    <div class="scanInfo"><div class="scanRead" id="scanRead"></div><p class="scanTip" id="scanTip">Acerque el ticket hasta que el número quede dentro del recuadro y quieto.</p></div>
+    <div class="scanInfo"><div class="scanRead" id="scanRead"></div><p class="scanTip" id="scanTip">Ponga el código de barras y el número del sticker dentro del recuadro, quieto.</p></div>
   </div>
   <div class="scanBot">
     <div class="zoom" id="zoomRow" hidden><span>Zoom</span><input type="range" id="scanZoom" aria-label="Zoom"><span id="zoomVal"></span></div>
@@ -352,6 +352,7 @@ nav.tabs button[aria-selected=true]{color:var(--link);font-weight:bold}
 <script src="vendor/exceljs.min.js" defer></script>
 <script src="vendor/jszip.min.js" defer></script>
 <script src="vendor/tesseract/tesseract.min.js" defer></script>
+<script src="vendor/zxing/zxing-reader.js" defer></script>
 <script>
 /* ───────── Utilidades ───────── */
 const $=s=>document.querySelector(s);
@@ -401,7 +402,7 @@ function pintarChat(abajo){
   S.cierres.forEach(c=>{if(c.fecha>=desde)items.push({k:'c',ts:Date.parse(c.fecha+'T20:00:00-05:00'),f:c.fecha,c})});
   items.sort((a,b)=>a.ts-b.ts);
   let h=`<div class="msg bot"><div class="bh"><span class="av">${ICON_BOT}</span>Werfen Parking</div>
-    <p>Toque <b>Escanear ticket</b> y ponga el número dentro del recuadro: la app lo lee sola. Confirme carro o moto y el nombre de quien lo recibió. Cada día a las 8:00 p. m. dejo aquí el Excel con el resumen.</p></div>`;
+    <p>Toque <b>Escanear ticket</b> y ponga el código de barras del sticker dentro del recuadro: la app lo lee sola. Confirme carro o moto y el nombre de quien lo recibió. Cada día a las 8:00 p. m. dejo aquí el Excel con el resumen.</p></div>`;
   let dia='';
   for(const it of items){
     if(it.f!==dia){dia=it.f;h+=`<div class="day">${it.f===hoy?'Hoy':esc(fechaLarga(it.f))}</div>`}
@@ -439,11 +440,11 @@ $('#chat').addEventListener('click',async e=>{
 document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click',()=>{$('#'+b.dataset.close).hidden=true}));
 
 /* ───────── Registro ───────── */
-function abrirFormulario(foto,num){
-  S.foto=foto;S.tipoManual=false;
+function abrirFormulario(foto,num,fuente){
+  S.foto=foto;S.tipoManual=false;S.fuente=num?(fuente||'números'):'manual';S.numAuto=num||'';
   $('#pvImg').src=URL.createObjectURL(foto.thumb.blob);
   $('#iNum').value=num||'';$('#fErr').textContent='';$('#dupBox').hidden=true;S.forzar=false;$('#bSend').textContent='Enviar';
-  $('#ocrC').innerHTML='';ocrEstado(num?'Número leído automáticamente. Verifíquelo antes de enviar.':'',!!num);
+  $('#ocrC').innerHTML='';ocrEstado(num?(fuente==='código de barras'||fuente==='código 2D'?`Leído del ${fuente}.`:'Número leído automáticamente. Verifíquelo antes de enviar.'):'',!!num);
   $('#iNom').value=ls.get('wp_nombre')||'';setTipo(ls.get('wp_tipo'));
   $('#sheet').hidden=false;if(!num)setTimeout(()=>$('#iNum').focus(),80);
 }
@@ -505,14 +506,60 @@ function preparar(src,sx,sy,sw,sh,alto,bin){
   x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.putImageData(id,M,M);
   return c;
 }
-// Números candidatos ordenados por tamaño del texto, largo y confianza
+// Dígito de control EAN-13 (el número impreso bajo las barras del sticker: 0 300862 007590)
+function ean13ok(v){if(!/^\d{13}$/.test(v))return false;let s=0;for(let i=0;i<12;i++)s+=(+v[i])*(i%2?3:1);return (10-s%10)%10===+v[12]}
+// Números candidatos: une los grupos separados por espacios en cada línea; prioriza EAN-13 válido, luego tamaño, largo y confianza
 function candidatos(data){
-  const ws=data.words&&data.words.length?data.words:[{text:data.text||'',confidence:data.confidence||0,bbox:{y0:0,y1:20}}],out=[];
-  ws.forEach(w=>String(w.text||'').split(/\s+/).forEach(tk=>{const v=tk.replace(/\D/g,'');
-    if(v.length>=3&&v.length<=14)out.push({v,conf:w.confidence||0,h:w.bbox?w.bbox.y1-w.bbox.y0:20})}));
-  out.sort((a,b)=>b.h*Math.min(b.v.length,8)*(b.conf+20)-a.h*Math.min(a.v.length,8)*(a.conf+20));
+  const ls_=data.lines&&data.lines.length?data.lines:String(data.text||'').split(/\n/).map(t=>({text:t,confidence:data.confidence||0,bbox:{y0:0,y1:20}})),out=[];
+  ls_.forEach(l=>{
+    const t=String(l.text||'').replace(/(\d)[\s.,·\-]+(?=\d)/g,'$1');
+    (t.match(/\d{3,}/g)||[]).forEach(v=>{
+      const conf=l.confidence||0,h=l.bbox?l.bbox.y1-l.bbox.y0:20;
+      if(v.length>13){for(let i=0;i+13<=v.length;i++){const sub=v.slice(i,i+13);if(ean13ok(sub))out.push({v:sub,conf,h,ean:true})}}
+      if(v.length<=14)out.push({v,conf,h,ean:ean13ok(v)});
+    });
+  });
+  // Palabras sueltas en la misma línea y cercanas (ej. "0" "300862" "007590"): se unen por posición
+  const ws=(data.words||[]).filter(w=>/^\d+$/.test(String(w.text||'').replace(/\W/g,''))&&w.bbox).map(w=>({t:String(w.text).replace(/\D/g,''),b:w.bbox,c:w.confidence||0})).sort((a,b)=>a.b.x0-b.b.x0);
+  const usados=new Set();
+  ws.forEach((w,i)=>{if(usados.has(i))return;let grp=[w],ult=w;usados.add(i);
+    ws.forEach((o,j)=>{if(usados.has(j))return;const h=Math.max(ult.b.y1-ult.b.y0,o.b.y1-o.b.y0),cy=(ult.b.y0+ult.b.y1)/2,oy=(o.b.y0+o.b.y1)/2;
+      if(Math.abs(cy-oy)<h*.5&&o.b.x0-ult.b.x1<h*1.6&&o.b.x0>=ult.b.x1-h*.3){grp.push(o);ult=o;usados.add(j)}});
+    if(grp.length>1){const v=grp.map(g=>g.t).join(''),h=Math.max(...grp.map(g=>g.b.y1-g.b.y0)),conf=Math.min(...grp.map(g=>g.c));
+      if(v.length<=14)out.push({v,conf,h,ean:ean13ok(v)});else for(let k=0;k+13<=v.length;k++){const sub=v.slice(k,k+13);if(ean13ok(sub))out.push({v:sub,conf,h,ean:true})}}});
+  const pts=o=>(o.ean?1e6:0)+o.h*Math.min(o.v.length,13)*(o.conf+20);
+  out.sort((a,b)=>pts(b)-pts(a));
   const seen=new Set();return out.filter(o=>!seen.has(o.v)&&seen.add(o.v));
 }
+
+/* ───────── Código de barras y 2D (EAN-13, Aztec, QR…) ───────── */
+const BC={p:null,
+  listo(){
+    if(!this.p)this.p=(async()=>{
+      for(let i=0;i<50&&!window.ZXingWASM;i++)await sleep(100);
+      if(!window.ZXingWASM)throw new Error('No se cargó el lector de barras.');
+      const base=new URL('vendor/zxing/',location.href).href;
+      await ZXingWASM.prepareZXingModule({overrides:{locateFile:(p,pre)=>p.endsWith('.wasm')?base+p:pre+p},fireImmediately:true});
+      return true;
+    })().catch(e=>{this.p=null;throw e});
+    return this.p;
+  },
+  async leer(cv,fuerte){
+    await this.listo();
+    const id=cv.getContext('2d',{willReadFrequently:true}).getImageData(0,0,cv.width,cv.height);
+    const rs=await ZXingWASM.readBarcodes(id,{formats:['EAN13','UPCA','EAN8','Code128','ITF','Aztec','QRCode','DataMatrix'],tryHarder:true,tryRotate:!!fuerte,tryInvert:false,tryDownscale:true,maxNumberOfSymbols:4});
+    return rs.filter(r=>r.isValid&&r.text);
+  }
+};
+// Saca el número del ticket de lo que leyó el lector de barras
+function numeroDeCodigos(rs){
+  const lin=rs.find(r=>/EAN|UPC|ITF|Code128/i.test(r.format));
+  if(lin){let v=String(lin.text).replace(/\D/g,'');if(/UPC-?A/i.test(lin.format)&&v.length===12)v='0'+v;if(v.length>=4)return{num:v,fuente:'código de barras',raw:lin.text}}
+  for(const r of rs){const ds=String(r.text).match(/\d{6,}/g)||[];const e=ds.find(ean13ok)||ds.sort((a,b)=>b.length-a.length)[0];if(e)return{num:e,fuente:'código 2D',raw:r.text}}
+  return null;
+}
+// Recorte simple (sin filtros) para el lector de barras
+function recorte(src,sx,sy,sw,sh,maxW){const k=Math.min(1.6,maxW/sw),c=document.createElement('canvas');c.width=Math.round(sw*k);c.height=Math.round(sh*k);c.getContext('2d').drawImage(src,sx,sy,sw,sh,0,0,c.width,c.height);return c}
 function ocrEstado(t,ok,spin){const e=$('#ocrSt');e.className='ocrst'+(ok?' ok':'');e.innerHTML=(spin?'<span class="spin"></span>':'')+esc(t)}
 function ponerCandidatos(cs){
   const box=$('#ocrC');box.innerHTML='';
@@ -530,18 +577,36 @@ async function leerFoto(img){
   try{
     const W=img.naturalWidth,H=img.naturalHeight,esc1=Math.min(1,1800/Math.max(W,H));
     const base=document.createElement('canvas');base.width=Math.round(W*esc1);base.height=Math.round(H*esc1);base.getContext('2d').drawImage(img,0,0,base.width,base.height);
-    let cs=[];
-    for(const rot of [0,90,270]){
+    const full=document.createElement('canvas');full.width=W;full.height=H;full.getContext('2d').drawImage(img,0,0);
+    try{const rs=await BC.leer(full,true),n=numeroDeCodigos(rs);
+      if(n&&!$('#sheet').hidden){if(!$('#iNum').value||S.fuente==='manual'){$('#iNum').value=n.num;S.numAuto=n.num;S.fuente=n.fuente}ocrEstado(`Leído del ${n.fuente}.`,true);
+        const r0=rs.find(r=>r.position)||null;
+        if(r0){const ps=r0.position,xs=[ps.topLeft.x,ps.topRight.x,ps.bottomLeft.x,ps.bottomRight.x],ys=[ps.topLeft.y,ps.topRight.y,ps.bottomLeft.y,ps.bottomRight.y];
+          const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys),bw=x1-x0,bh=Math.max(y1-y0,bw*.2);
+          const sx=Math.max(0,x0-bw*.15),sy=Math.max(0,y0-bh*1.4);detectarTipo(preparar(full,sx,sy,Math.min(W-sx,bw*1.3),Math.min(H-sy,bh*2.6),420,false))}
+        else detectarTipo(preparar(base,0,0,base.width,base.height,Math.min(base.height,1400),false));
+        return}}catch(e){}
+    // Sin barras: lee los números en la foto completa y luego acercándose (el sticker suele ocupar poco de la foto)
+    const zonas=[[0,0,1,1],[.2,.2,.6,.6],[.3,.3,.4,.4],[.3,.15,.4,.4],[.3,.45,.4,.4],[.1,.3,.4,.4],[.5,.3,.4,.4]];
+    let cs=[],zona=null,srcZ=base;
+    fuera: for(const rot of [0,90,270]){
       let src=base;
       if(rot){src=document.createElement('canvas');src.width=base.height;src.height=base.width;const x=src.getContext('2d');x.translate(src.width/2,src.height/2);x.rotate(rot*Math.PI/180);x.drawImage(base,-base.width/2,-base.height/2)}
-      const cv=preparar(src,0,0,src.width,src.height,src.height,false);
-      cs=candidatos(await OCR.digitos(cv,11));
-      if(cs.length&&cs[0].conf>=45)break;
+      for(const [zx,zy,zw,zh] of (rot?zonas.slice(0,3):zonas)){
+        if($('#sheet').hidden)return;
+        const sx=src.width*zx,sy=src.height*zy,sw=src.width*zw,sh=src.height*zh;
+        const cv=preparar(src,sx,sy,sw,sh,Math.min(2600,sh*(zw<1?2.4:1)),false);
+        const c2=candidatos(await OCR.digitos(cv,11));
+        if(c2.length&&(!cs.length||(c2[0].ean&&!cs[0].ean)))cs=c2;
+        if(cs.length&&(cs[0].ean||cs[0].conf>=45&&cs[0].v.length>=6)){zona=[sx,sy,sw,sh];srcZ=src;break fuera}
+      }
     }
     if($('#sheet').hidden)return;
-    if(cs.length){if(!$('#iNum').value)$('#iNum').value=cs[0].v;ponerCandidatos(cs);ocrEstado(cs.length>1?'Número leído. Si no es el correcto, toque otro o escríbalo.':'Número leído. Verifíquelo antes de enviar.',true)}
+    const seguro=cs.length&&(cs[0].ean||cs[0].conf>=60&&cs[0].v.length>=6);
+    if(seguro){if(!$('#iNum').value){$('#iNum').value=cs[0].v;S.numAuto=cs[0].v;S.fuente='números'}ponerCandidatos(cs);ocrEstado(cs[0].ean?'Número leído y validado con el dígito de control.':'Número leído. Verifíquelo antes de enviar.',true)}
+    else if(cs.length){ponerCandidatos(cs);ocrEstado('La foto no se ve nítida. Posibles lecturas: toque la correcta o escriba el número.')}
     else ocrEstado('No se pudo leer el número en la foto. Escríbalo o use Escanear ticket, que lee mejor los tickets pequeños.');
-    detectarTipo(preparar(base,0,0,base.width,base.height,Math.min(base.height,1400),false));
+    detectarTipo(zona?preparar(srcZ,zona[0],zona[1],zona[2],zona[3],Math.min(2600,zona[3]*2.4),false):preparar(base,0,0,base.width,base.height,Math.min(base.height,1400),false));
   }catch(e){ocrEstado('El lector no está disponible ahora. Escriba el número.')}
 }
 
@@ -549,9 +614,9 @@ async function leerFoto(img){
 const SC={on:false,stream:null,track:null,hist:[],torch:false};
 function cerrarEscaner(){SC.on=false;if(SC.stream)SC.stream.getTracks().forEach(t=>t.stop());SC.stream=null;SC.track=null;$('#scanVid').srcObject=null;$('#scan').hidden=true;$('#scanBox').classList.remove('ok')}
 async function abrirEscaner(){
-  $('#scan').hidden=false;$('#scanRead').innerHTML='';$('#scanTip').textContent='Acerque el ticket hasta que el número quede dentro del recuadro y quieto.';
+  $('#scan').hidden=false;$('#scanRead').innerHTML='';$('#scanTip').textContent='Ponga el código de barras y el número del sticker dentro del recuadro, quieto.';
   $('#zoomRow').hidden=true;$('#scanTorch').hidden=true;SC.hist=[];
-  OCR.listo().catch(()=>{});
+  OCR.listo().catch(()=>{});BC.listo().catch(()=>{});
   if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){$('#scanTip').textContent='Este navegador no permite usar la cámara en vivo. Toque Foto normal.';return}
   try{SC.stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}}})}
   catch(e){$('#scanTip').textContent='No se pudo abrir la cámara (permiso negado). Toque Foto normal o permita la cámara en Ajustes.';return}
@@ -576,36 +641,49 @@ function bandaVideo(){
 }
 async function leerBanda(bin){
   const b=bandaVideo();if(!b)return[];
-  const cv=preparar($('#scanVid'),b.sx,b.sy,b.sw,b.sh,110,bin);
-  return candidatos(await OCR.digitos(cv,7));
+  const cv=preparar($('#scanVid'),b.sx,b.sy,b.sw,b.sh,170,bin);
+  return candidatos(await OCR.digitos(cv,6));
+}
+async function barrasBanda(){
+  const b=bandaVideo();if(!b)return null;
+  const v=$('#scanVid'),mx=b.sw*.12,my=b.sh*.25;
+  const sx=Math.max(0,b.sx-mx),sy=Math.max(0,b.sy-my);
+  return numeroDeCodigos(await BC.leer(recorte(v,sx,sy,Math.min(v.videoWidth-sx,b.sw+2*mx),Math.min(v.videoHeight-sy,b.sh+2*my),1400),false));
 }
 async function bucle(){
   let i=0;
   while(SC.on){
     const t0=Date.now();
     try{
-      if(!OCR.w){$('#scanRead').innerHTML='<small>Preparando el lector…</small>';await OCR.listo()}
-      const cs=await leerBanda(i++%2===1);
+      // 1) Código de barras / 2D: rápido y exacto
+      let n=null;try{n=await barrasBanda()}catch(e){}
       if(!SC.on)break;
-      const top=cs[0];
-      SC.hist.push(top&&top.conf>=35?top.v:'');if(SC.hist.length>4)SC.hist.shift();
-      if(top){$('#scanRead').innerHTML=esc(top.v)+'<small>Sostenga quieto…</small>'}else $('#scanRead').innerHTML='<small>Buscando el número…</small>';
-      const iguales=top?SC.hist.filter(h=>h===top.v).length:0;
-      if(top&&(iguales>=2&&top.conf>=55||iguales>=3)){await aceptar(top.v);break}
+      if(n){await aceptar(n.num,n.fuente);break}
+      // 2) Respaldo: leer los números impresos (cada dos vueltas, para no frenar el lector de barras)
+      if(i++%2===1){
+        if(!OCR.w){$('#scanRead').innerHTML='<small>Preparando el lector…</small>';await OCR.listo()}
+        const cs=await leerBanda(i%4===1);
+        if(!SC.on)break;
+        const top=cs[0];
+        SC.hist.push(top&&(top.ean||top.conf>=35)?top.v:'');if(SC.hist.length>4)SC.hist.shift();
+        if(top){$('#scanRead').innerHTML=esc(top.v)+'<small>Sostenga quieto…</small>'}else $('#scanRead').innerHTML='<small>Buscando el código…</small>';
+        const iguales=top?SC.hist.filter(h=>h===top.v).length:0;
+        if(top&&(top.ean&&iguales>=2||!top.ean&&top.v.length>=6&&(iguales>=3||iguales>=2&&top.conf>=70))){await aceptar(top.v,'números');break}
+      }
     }catch(e){$('#scanRead').innerHTML='<small>El lector no está disponible. Use Foto normal.</small>';await sleep(1500)}
-    await sleep(Math.max(80,350-(Date.now()-t0)));
+    await sleep(Math.max(60,220-(Date.now()-t0)));
   }
 }
 function cuadroVideo(){const v=$('#scanVid'),c=document.createElement('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);return c}
 async function fotoDeCanvas(c){const img=await cargarImg(await new Promise(r=>c.toBlob(r,'image/jpeg',.92)));return{img,foto:{full:await aJpeg(img,1600,0.78),thumb:await aJpeg(img,480,0.7)}}}
-async function aceptar(num){
+async function aceptar(num,fuente){
   SC.on=false;$('#scanBox').classList.add('ok');$('#scanRead').innerHTML=esc(num)+'<small>¡Leído!</small>';
   if(navigator.vibrate)navigator.vibrate([60,40,60]);
   const c=cuadroVideo(),b=bandaVideo();
   const {foto}=await fotoDeCanvas(c);
-  cerrarEscaner();abrirFormulario(foto,num);
-  // Busca CARRO / MOTO alrededor del número
-  if(b){const ex=Math.max(b.sw,b.sh*3);detectarTipo(preparar(c,Math.max(0,b.sx-ex*.2),Math.max(0,b.sy-ex*.6),Math.min(c.width,b.sw+ex*.4),Math.min(c.height,b.sh+ex*1.2),900,false))}
+  cerrarEscaner();abrirFormulario(foto,num,fuente);
+  // Busca CARRO / MOTO en la línea de texto que va encima de las barras ("INDIGO T PLENA CARRO")
+  if(b){const sy=Math.max(0,b.sy-b.sh*.9),sx=Math.max(0,b.sx-b.sw*.1);detectarTipo(preparar(c,sx,sy,Math.min(c.width-sx,b.sw*1.2),Math.min(c.height-sy,b.sh*2.2),420,false))}
 }
 $('#bScan').addEventListener('click',abrirEscaner);
 $('#scanClose').addEventListener('click',cerrarEscaner);
@@ -615,13 +693,18 @@ $('#scanShot').addEventListener('click',async()=>{
   if(!SC.stream){toast('La cámara no está abierta. Toque Foto normal.');return}
   SC.on=false;const c=cuadroVideo(),b=bandaVideo();
   $('#scanRead').innerHTML='<small>Leyendo…</small>';
-  let cs=[];try{if(b){cs=candidatos(await OCR.digitos(preparar(c,b.sx,b.sy,b.sw,b.sh,110,false),7));if(!cs.length)cs=candidatos(await OCR.digitos(preparar(c,b.sx,b.sy,b.sw,b.sh,110,true),7))}}catch(e){}
+  let n=null,cs=[];
+  try{n=numeroDeCodigos(await BC.leer(c,true))}catch(e){}
+  if(!n)try{if(b){cs=candidatos(await OCR.digitos(preparar(c,b.sx,b.sy,b.sw,b.sh,170,false),6));if(!cs.length)cs=candidatos(await OCR.digitos(preparar(c,b.sx,b.sy,b.sw,b.sh,170,true),6))}}catch(e){}
   const {img,foto}=await fotoDeCanvas(c);cerrarEscaner();
-  abrirFormulario(foto,cs[0]?cs[0].v:'');
+  abrirFormulario(foto,n?n.num:cs[0]?cs[0].v:'',n?n.fuente:'números');
+  if(b){const sy=Math.max(0,b.sy-b.sh*.9),sx=Math.max(0,b.sx-b.sw*.1);detectarTipo(preparar(c,sx,sy,Math.min(c.width-sx,b.sw*1.2),Math.min(c.height-sy,b.sh*2.2),420,false))}
+  if(n)return;
   if(cs.length)ponerCandidatos(cs);else leerFoto(img);
 });
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&SC.stream)cerrarEscaner()});
 $('#iNum').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('#iNom').focus()}});
+$('#iNum').addEventListener('input',()=>{if($('#iNum').value.replace(/\s+/g,'')!==S.numAuto)S.fuente=S.numAuto?'corregido a mano':'manual'});
 $('#bCancel').addEventListener('click',()=>{$('#sheet').hidden=true;S.foto=null});
 $('#form').addEventListener('submit',async e=>{
   e.preventDefault();
@@ -634,7 +717,7 @@ $('#form').addEventListener('submit',async e=>{
     if(p){$('#dupBox').innerHTML=`El ticket <b>N° ${esc(p.num)}</b> (${p.tipo}) ya se registró hoy a las ${hora12(p.hora)} por <b>${esc(p.nombre)}</b>. Si es otro ticket con el mismo número, toque <b>Registrar igual</b>.`;$('#dupBox').hidden=false;S.forzar=true;$('#bSend').textContent='Registrar igual';return}}
   ls.set('wp_nombre',nombre);ls.set('wp_tipo',S.tipo);
   const id='T'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
-  const r={id,num,tipo:S.tipo,nombre,fecha:t.fecha,hora:t.hora,ts:Date.now(),tw:S.foto.thumb.w,th:S.foto.thumb.h};
+  const r={id,num,tipo:S.tipo,nombre,fecha:t.fecha,hora:t.hora,ts:Date.now(),tw:S.foto.thumb.w,th:S.foto.thumb.h,lectura:S.fuente||'manual'};
   try{
     await DB.put('fotos',{id,blob:S.foto.full.blob,thumb:S.foto.thumb.blob});
     await DB.put('tickets',r);
@@ -676,7 +759,7 @@ function kv(ws,pares){pares.forEach(([k,v])=>{const r=ws.addRow([k,v]);r.getCell
 function tabla(ws,cab,filas,ancho){const h=ws.addRow(cab);encabezar(h);filas.forEach(f=>ws.addRow(f));if(ancho)ancho.forEach((w,i)=>{ws.getColumn(i+1).width=Math.max(ws.getColumn(i+1).width||0,w)})}
 const EMP='Werfen Colombia & Latam Distribution';
 const corte=()=>{const t=bog();return `${t.fecha} ${t.hora.slice(0,5)}`};
-const filaDet=(r,i)=>[i+1,r.fecha,r.hora,r.num,r.tipo,r.nombre];
+const filaDet=(r,i)=>[i+1,r.fecha,r.hora,r.num,r.tipo,r.nombre,r.lectura||'manual'];
 
 async function libroDia(f){
   const rows=delDia(f).sort((a,b)=>a.ts-b.ts),a=agregado(rows),wb=new ExcelJS.Workbook();wb.creator='Werfen Parking';
@@ -686,12 +769,12 @@ async function libroDia(f){
     ['Hora pico',a.horaPico===null?'—':`${String(a.horaPico).padStart(2,'0')}:00 – ${String(a.horaPico).padStart(2,'0')}:59`],['Generado',corte()]]);
   tabla(ws,['Recibido por','Carros','Motos','Total'],a.personas.map(p=>[p.n,p.c,p.m,p.c+p.m]));
   const d=wb.addWorksheet('Detalle',{views:[{state:'frozen',ySplit:1}]});
-  d.columns=[{width:5},{width:13},{width:12},{width:16},{width:9},{width:28},{width:24}];
-  encabezar(d.addRow(['#','Fecha cargue','Hora cargue','N° ticket','Tipo','Recibido por','Foto']));
+  d.columns=[{width:5},{width:13},{width:12},{width:17},{width:9},{width:28},{width:17},{width:24}];
+  encabezar(d.addRow(['#','Fecha cargue','Hora cargue','N° ticket','Tipo','Recibido por','Lectura','Foto']));
   for(let i=0;i<rows.length;i++){
     const r=rows[i],row=d.addRow(filaDet(r,i));row.height=100;row.alignment={vertical:'middle'};row.getCell(4).numFmt='@';
     const ft=await DB.get('fotos',r.id);
-    if(ft){const buf=await ft.thumb.arrayBuffer();const im=wb.addImage({buffer:buf,extension:'jpeg'});const hh=128,ww=Math.round(hh*(r.tw||4)/(r.th||3));d.addImage(im,{tl:{col:6.05,row:i+1.04},ext:{width:Math.min(ww,170),height:hh}})}
+    if(ft){const buf=await ft.thumb.arrayBuffer();const im=wb.addImage({buffer:buf,extension:'jpeg'});const hh=128,ww=Math.round(hh*(r.tw||4)/(r.th||3));d.addImage(im,{tl:{col:7.05,row:i+1.04},ext:{width:Math.min(ww,170),height:hh}})}
   }
   fuente(ws);fuente(d);
   return{wb,nombre:`WerfenParking_Diario_${f}.xlsx`};
@@ -705,7 +788,7 @@ function hojasResumen(wb,t,rows){
 }
 function hojaDetalle(wb,nombre,rows){
   const d=wb.addWorksheet(nombre,{views:[{state:'frozen',ySplit:1}]});
-  tabla(d,['#','Fecha cargue','Hora cargue','N° ticket','Tipo','Recibido por'],rows.map(filaDet),[5,13,12,16,9,28]);d.getColumn(4).numFmt='@';fuente(d);
+  tabla(d,['#','Fecha cargue','Hora cargue','N° ticket','Tipo','Recibido por','Lectura'],rows.map(filaDet),[5,13,12,17,9,28,17]);d.getColumn(4).numFmt='@';fuente(d);
 }
 async function libroMes(){
   const t=bog(),mes=t.fecha.slice(0,7),rows=S.regs.filter(r=>r.fecha.startsWith(mes)).sort((a,b)=>a.ts-b.ts),wb=new ExcelJS.Workbook();
@@ -878,7 +961,7 @@ $('#bIosHow').addEventListener('click',mostrarInst);
   try{await DB.open();S.regs=(await DB.all('tickets')).sort((a,b)=>a.ts-b.ts);(await DB.all('cierres')).forEach(c=>S.cierres.set(c.fecha,c))}
   catch(e){$('#chat').innerHTML='<div class="empty">Este navegador no permite guardar datos (¿modo privado?). Ábrala en Safari o Chrome normal.</div>';return}
   await revisarCierres();pintarChat(true);
-  setTimeout(()=>OCR.listo().catch(()=>{}),1500);
+  setTimeout(()=>{BC.listo().catch(()=>{});OCR.listo().catch(()=>{})},1500);
   if(!esStandalone()){
     if(esIOS){$('#iosBanner').hidden=false;if(!ls.get('wp_inst_visto'))mostrarInst()}
     else if(esAnd&&!ls.get('wp_inst_visto'))setTimeout(mostrarInst,1200);

@@ -1,7 +1,8 @@
 /* Werfen Parking · service worker: deja la app disponible sin internet */
-const CACHE = 'wp-v2';
+const CACHE = 'wp-v3';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'vendor/exceljs.min.js', 'vendor/jszip.min.js', 'vendor/tesseract/tesseract.min.js', 'vendor/tesseract/worker.min.js',
   'vendor/tesseract/tesseract-core-simd-lstm.wasm.js', 'vendor/tesseract/tesseract-core-lstm.wasm.js', 'vendor/tesseract/lang/eng.traineddata.gz',
+  'vendor/zxing/zxing-reader.js', 'vendor/zxing/zxing_reader.wasm',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-32.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {
